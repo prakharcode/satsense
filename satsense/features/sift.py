@@ -48,8 +48,7 @@ class Sift(Feature):
                  windows=((25, 25), ),
                  normalized=True):
         """Create sift feature."""
-        super(Sift, self)
-        self.windows = windows
+        super().__init__(windows=windows)
         self.kmeans = kmeans
         self.feature_size = len(self.windows) * kmeans.n_clusters
         self.normalized = normalized

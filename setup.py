@@ -19,7 +19,6 @@ setup(
         'netCDF4',
         'numba',
         'numpy',
-        'opencv-contrib-python-headless',
         'rasterio',
         'scikit-image',
         'scikit-learn',
@@ -37,6 +36,9 @@ setup(
             'prospector[with_pyroma]',
             'yamllint',
             'yapf',
+        ],
+        'opencv': [
+            'opencv-contrib-python-headless'
         ],
         'notebooks': [
             'jupyter',

@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 
 class Image:
-    def __init__(self, image, bands=None, itype='raw'):
+    def __init__(self, image, bands=None, itype='raw', compute=True):
         if bands is None:
             bands = self._guess_bands(image.shape)
         if not isinstance(bands, dict):
@@ -30,12 +30,25 @@ class Image:
         if len(bands) == 1 and image is not None and len(image.shape) == 2:
             image = np.reshape(image, image.shape + (1, ))
         self._bands = bands
-        self._images = {itype: image}
         self._normalization_parameters = {
             'technique': 'cumulative',
             'percentiles': [2.0, 98.0],
             'numstds': 2,
         }
+
+        # Don't store the raw image, it's not used anywhere
+        # Only store the normalized one
+        self._images = {}
+        if compute:
+            # When creating a window compute is set to False
+            # to prevent re-calculating
+            if itype == 'raw':
+                self._images['normalized'] = get_normalized_image(
+                    image, self.bands, **self._normalization_parameters)
+            elif itype == 'normalized':
+                self._images['normalized'] = image
+            else:
+                raise ValueError("Image only supports 'raw' and 'normalized' images")
 
     @staticmethod
     def _guess_bands(shape):
@@ -64,29 +77,19 @@ class Image:
 
     @property
     def normalized(self):
-        if 'normalized' not in self._images:
-            self._images['normalized'] = get_normalized_image(
-                self.raw, self.bands, **self._normalization_parameters)
         return self._images['normalized']
 
     @property
     def rgb(self):
-        if 'rgb' not in self._images:
-            self._images['rgb'] = get_rgb_image(self.normalized, self.bands)
-        return self._images['rgb']
+        return get_rgb_image(self.normalized, self.bands)
 
     @property
     def grayscale(self):
-        if 'grayscale' not in self._images:
-            self._images['grayscale'] = get_grayscale_image(
-                self.rgb, BANDS['rgb'])
-        return self._images['grayscale']
+        return get_grayscale_image(self.rgb, BANDS['rgb'])
 
     @property
     def gray_ubyte(self):
-        if 'gray_ubyte' not in self._images:
-            self._images['gray_ubyte'] = get_gray_ubyte_image(self.grayscale)
-        return self._images['gray_ubyte']
+        return get_gray_ubyte_image(self.grayscale)
 
     @property
     def canny_edge(self):
@@ -216,7 +219,7 @@ class Window(Image):
                  x_range: slice,
                  y_range: slice,
                  orig: Image = None):
-        super().__init__(image=None, bands=image.bands)
+        super().__init__(image=image, bands=image.bands, compute=False)
 
         self._images = image._images
 
@@ -232,11 +235,13 @@ class Window(Image):
 
 
 class SatelliteImage(Image):
-    def __init__(self, array, satellite, name='', crs=None, transform=None):
+    def __init__(self, array, satellite, name='', crs=None, transform=None, bounds=None, res=None):
         super().__init__(array, bands=satellite)
         self.name = name
         self.transform = transform
         self.crs = crs
+        self.bounds = bounds
+        self.res = res
 
     @classmethod
     def load_from_file(cls, path, satellite):
@@ -245,6 +250,8 @@ class SatelliteImage(Image):
             image = dataset.read(masked=True)
             crs = dataset.crs
             transform = dataset.transform
+            bounds = dataset.bounds
+            res = dataset.res
 
         if len(image.shape) == 3:
             # The bands column is in the first position, but we want it last
@@ -254,7 +261,7 @@ class SatelliteImage(Image):
             # of use in the rest of the library
             image = image[:, :, np.newaxis]
 
-        return cls(image, satellite, name=path, crs=crs, transform=transform)
+        return cls(image, satellite, name=path, crs=crs, transform=transform, bounds=bounds, res=res)
 
     def scaled_transform(self, cell_size):
         """Compute a transform for a scaled down version of the image."""

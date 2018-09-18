@@ -6,7 +6,8 @@ class Feature(object):
 
     __metaclass__ = ABCMeta
 
-    def __init__(self):
+    def __init__(self, windows=((25, 25),)):
+        self.windows = windows
         self._indices = None
         self._length = 0
 

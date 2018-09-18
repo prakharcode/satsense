@@ -46,8 +46,7 @@ class NDXI(Feature):
     """The parent class of the family of NDXI features."""
 
     def __init__(self, option, windows=((25, 25), )):
-        super(NDXI, self)
-        self.windows = windows
+        super().__init__(windows=windows)
         self.option = option
         self.feature_size = len(self.windows)
         self.base_image = 'normalized'

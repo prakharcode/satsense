@@ -38,8 +38,7 @@ class Texton(Feature):
                  kmeans: MiniBatchKMeans,
                  windows=((25, 25), ),
                  normalized=True):
-        super(Texton, self)
-        self.windows = windows
+        super().__init__(windows=windows)
         self.kmeans = kmeans
         self.feature_size = len(self.windows) * kmeans.n_clusters
         self.normalized = normalized

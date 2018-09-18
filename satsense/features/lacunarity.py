@@ -42,9 +42,8 @@ class Lacunarity(Feature):
                         "box_size {} must be smaller than window {}".format(
                             box_size, window))
 
-        super(Lacunarity, self)
+        super(Lacunarity, self).__init__(windows=windows)
         self.box_sizes = box_sizes
-        self.windows = windows
         self.feature_size = len(self.windows) * len(box_sizes)
         self.base_image = 'canny_edge'
 

@@ -220,8 +220,7 @@ def hog_features(window, bins=50, kernel=scipy.stats.norm().pdf,
 
 class HistogramOfGradients(Feature):
     def __init__(self, windows=((25, 25), )):
-        super(HistogramOfGradients, self)
-        self.windows = windows
+        super(HistogramOfGradients, self).__init__(windows=windows)
         self.feature_len = 5
         self.base_image = 'grayscale'
         self.feature_size = self.feature_len * len(self.windows)

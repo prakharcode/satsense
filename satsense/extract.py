@@ -6,8 +6,13 @@ from os import cpu_count
 
 import numpy as np
 import rasterio
+import time
 
 from netCDF4 import Dataset
+import osr
+
+from . import __version__
+from .generators import CellGenerator
 
 logger = logging.getLogger(__name__)
 
@@ -51,8 +56,17 @@ def extract_features(features, generator):
     return feature_vector
 
 
+def get_feature_filenames(features, filename_prefix='', extension='.nc'):
+    """Retrieve the filenames these features will generate"""
+    filenames = []
+    for name, _ in features.items.items():
+        filenames.append(filename_prefix + name + extension)
+    return filenames
+
+
 def save_features(features,
                   feature_vector,
+                  generator,
                   filename_prefix='',
                   extension='.nc',
                   crs=None,
@@ -63,21 +77,65 @@ def save_features(features,
         logger.debug("Saving feature %s to file %s", name, filename)
         data = feature_vector[:, :, feature.indices]
         if extension.lower() == '.nc':
-            _save_array_as_netcdf(data, filename, name)
+            _save_array_as_netcdf(data, filename, name, feature, generator)
         elif extension.lower() == '.tif':
             _save_array_as_tif(data, filename, crs=crs, transform=transform)
 
 
-def _save_array_as_netcdf(data, filename, feature_name):
+def _save_array_as_netcdf(data, filename, feature_name, feature, generator):
     """Save feature array as NetCDF file."""
-    width, height, length = data.shape
-    with Dataset(filename, 'w') as dataset:
-        dataset.createDimension('width', width)
-        dataset.createDimension('height', height)
-        dataset.createDimension('length', length)
-        variable = dataset.createVariable(
-            feature_name, 'f4', dimensions=('width', 'height', 'length'))
-        variable[:] = data
+    width, height, windows = data.shape
+    with Dataset(filename, 'w', format="NETCDF4_CLASSIC") as dataset:
+        dataset.history = 'Created ' + time.ctime(time.time())
+        dataset.source = 'Satsense version ' + __version__
+        dataset.description = 'Satsense extracted values for feature: ' + feature_name
+        dataset.Conventions = 'CF-1.5'
+
+        dataset.title = feature_name
+
+        dataset.createDimension('lon', height)
+        dataset.createDimension('lat', width)
+
+        lats = dataset.createVariable(
+            'lat', 'f8', dimensions=('lat')
+        )
+        lats.standard_name = 'latitude'
+        lats.long_name = 'latitude'
+        lats.units = 'degree_north'
+        lats._CoordinateAxisType = "Lat"
+
+        lons = dataset.createVariable(
+            'lon', 'f8', dimensions=('lon')
+        )
+        lons.standard_name = 'longitude'
+        lons.long_name = "longitude"
+        lons.units = 'degrees_east'
+        lons._CoordinateAxisType = "Lon"
+
+        left, bottom, _, _ = generator.image.bounds
+        pixel_width, pixel_height = generator.image.res
+        left += pixel_width / 2.0
+        bottom += pixel_height / 2.0
+        cell_width = generator.x_size * pixel_width
+        cell_height = generator.y_size * pixel_height
+        cell_center_x = np.arange(generator.y_length) * cell_width + left
+        cell_center_y = np.arange(generator.x_length) * cell_height + bottom
+
+        lats[:] = cell_center_y
+        lons[:] = cell_center_x
+
+        # x, y, z -> z, y, x
+        transposed = np.transpose(data, (2, 0, 1))
+        transposed = transposed[:, ::-1, :]
+        for i in range(windows):
+            window = feature.windows[i]
+            window_name = str(window[0]) + 'x' + str(window[1])
+            variable = dataset.createVariable(
+               window_name, 'f4', dimensions=('lat', 'lon'))
+            variable.grid_mapping = 'spatial_ref'
+            variable.long_name = feature_name
+
+            variable[:] = transposed[i]
 
 
 def _save_array_as_tif(data, filename, crs, transform):
