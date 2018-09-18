@@ -15,7 +15,6 @@ setup(
     install_requires=[
         'descartes',
         'fiona',
-        'gdal',
         'netCDF4',
         'numba',
         'numpy',

@@ -6,7 +6,6 @@ import warnings
 
 import numpy as np
 import rasterio
-from osgeo import gdal
 from scipy import ndimage
 from skimage import color, img_as_ubyte
 from skimage.feature import canny
@@ -15,8 +14,6 @@ from skimage.filters.rank import equalize
 from skimage.morphology import disk
 
 from .bands import BANDS
-
-gdal.AllRegister()
 
 logger = logging.getLogger(__name__)
 
