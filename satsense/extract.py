@@ -81,7 +81,7 @@ def save_features(features,
         elif extension.lower() == '.tif':
             _save_array_as_tif(data, filename, crs=crs, transform=transform)
 
-
+# TODO: We should probably add a method to stream the results to a file
 def _save_array_as_netcdf(data, filename, feature_name, feature, generator):
     """Save feature array as NetCDF file."""
     width, height, windows = data.shape
@@ -90,6 +90,7 @@ def _save_array_as_netcdf(data, filename, feature_name, feature, generator):
         dataset.source = 'Satsense version ' + __version__
         dataset.description = 'Satsense extracted values for feature: ' + feature_name
         dataset.Conventions = 'CF-1.5'
+        dataset.cell_size = str(generator.x_length) + ',' + str(generator.y_length)
 
         dataset.title = feature_name
 
