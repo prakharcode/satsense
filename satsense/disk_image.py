@@ -2,25 +2,30 @@ import rasterio
 import logging
 import numpy as np
 from rasterio import windows
+from concurrent.futures import ProcessPoolExecutor
+from functools import partial
+from os import cpu_count
 from .image import Image, remap
+
+logger = logging.getLogger('disk_image')
+
 
 class DiskImage(Image):
     """An image that is not loaded into memory, but read using windows from disk"""
-    def __init__(self, dataset, image, satellite, name='', compute=False):
+    def __init__(self, dataset, path, image, satellite, name='', compute=False):
         super().__init__(image, bands=satellite, compute=False)
+
         # We set the image here, because in normal Image it is not stored to save memory space
         # In a DiskImage this either a 1x1 pixel for checking the bands
         # Or a window that has just been loaded from disk
         self.image = image
 
         self.name = name
-        self.dataset = dataset
+        self.path = path
         self.crs = dataset.crs
         self.transform = dataset.transform
         self.bounds = dataset.bounds
         self.res = dataset.res
-
-        self.logger = logging.getLogger(self.__class__.__name__)
 
         if compute:
             self.calculate_normalization_factors(self.bands, **self._normalization_parameters)
@@ -28,21 +33,21 @@ class DiskImage(Image):
     @classmethod
     def load_from_file(cls, path, satellite):
         """Load the specified path and bands from file into a numpy array."""
-        dataset = rasterio.open(path)
+        with rasterio.open(path) as dataset:
 
-        # load the first pixel to determine number of bands
-        window = windows.Window(0, 0, 1, 1)
-        image = dataset.read(masked=False, window=window)
+            # load the first pixel to determine number of bands
+            window = windows.Window(0, 0, 1, 1)
+            image = dataset.read(masked=False, window=window)
 
-        if len(image.shape) == 3:
-            # The bands column is in the first position, but we want it last
-            image = np.rollaxis(image, 0, 3)
-        elif len(image.shape) == 2:
-            # This image seems to have one band, so we add an axis for ease
-            # of use in the rest of the library
-            image = image[:, :, np.newaxis]
+            if len(image.shape) == 3:
+                # The bands column is in the first position, but we want it last
+                image = np.rollaxis(image, 0, 3)
+            elif len(image.shape) == 2:
+                # This image seems to have one band, so we add an axis for ease
+                # of use in the rest of the library
+                image = image[:, :, np.newaxis]
 
-        return cls(dataset, image, satellite, name=path, compute=True)
+            return cls(dataset, path, image, satellite, name=path, compute=True)
     
     
     def calculate_normalization_factors(self, bands, technique='cumulative', percentiles=(2.0, 98.0), numstds=2):
@@ -51,9 +56,10 @@ class DiskImage(Image):
         This function does not load the entire image at once (if possible), but retains the necesarry number of values
         to calculate the given percentiles over multiple windows
         """
-        self.logger.debug("Computing normalization factors for image")
+        logger.debug("Computing normalization factors for image")
         if technique == 'cumulative':
-            self.min_max = self.calculate_cumulative_normalization_factors(self.dataset, bands, percentiles)
+            with rasterio.open(self.path) as dataset:
+                self.min_max = self.calculate_cumulative_normalization_factors(dataset, bands, percentiles)
         elif technique == 'meanstd':
             pass
         else:
@@ -90,8 +96,8 @@ class DiskImage(Image):
         y_tiles = int(np.ceil(dataset.shape[1] / window_size[1]))
         for x_tile in range(x_tiles):
             for y_tile in range(y_tiles):
-                self.logger.debug("x, y: ({}, {})".format(x_tile, y_tile))
-                image = get_tile(self.dataset, x_tile, y_tile, *window_size)
+                logger.debug("x, y: ({}, {})".format(x_tile, y_tile))
+                image = get_tile(dataset, x_tile, y_tile, *window_size)
 
                 for key, band in bands.items():
                     if np.ma.isMaskedArray(image):
@@ -177,8 +183,11 @@ def get_window(dataset, window):
 
 
 class DiskImageCell(DiskImage):
-    def __init__(self, image, x, y, x_range, y_range, orig=None):
-        super().__init__(orig.dataset, image, orig.bands, name=orig.name, compute=False)
+    def __init__(self, dataset, image, x, y, x_range, y_range, orig=None):
+        if np.ma.isMaskedArray(image):
+            image = np.ma.filled(image, fill_value=0)
+
+        super().__init__(dataset, orig.path, image, orig.bands, name=orig.name, compute=False)
         self.orig = orig
         self.min_max = orig.min_max
         self.x = x
@@ -187,50 +196,53 @@ class DiskImageCell(DiskImage):
         self.y_range = y_range
 
     def super_cell(self, size, padding=True):
-        x_offset = (size[0] / 2.0)
-        y_offset = (size[1] / 2.0)
+        with rasterio.open(self.path) as dataset:
+            x_offset = (size[0] / 2.0)
+            y_offset = (size[1] / 2.0)
 
-        x_middle = (self.x_range.stop + self.x_range.start) / 2.0
-        y_middle = (self.y_range.stop + self.y_range.start) / 2.0
+            x_middle = (self.x_range.stop + self.x_range.start) / 2.0
+            y_middle = (self.y_range.stop + self.y_range.start) / 2.0
 
-        x_start = np.floor(x_middle - x_offset)
-        x_end = np.floor(x_middle + x_offset)
+            x_start = int(np.floor(x_middle - x_offset))
+            x_end = int(np.floor(x_middle + x_offset))
 
-        y_start = np.floor(y_middle - y_offset)
-        y_end = np.floor(y_middle + y_offset)
+            y_start = int(np.floor(y_middle - y_offset))
+            y_end = int(np.floor(y_middle + y_offset))
 
-        y_pad_before = 0
-        y_pad_after = 0
-        x_pad_before = 0
-        x_pad_after = 0
-        pad_needed = False
-        if x_start < 0:
-            pad_needed = True
-            x_pad_before = -x_start
-            x_start = 0
-        if x_end > self.dataset.shape[0]:
-            pad_needed = True
-            x_pad_after = x_end - self.dataset.shape[0]
-            x_end = self.dataset.shape[0]
-        if y_start < 0:
-            pad_needed = True
-            y_pad_before = -y_start
-            y_start = 0
-        if y_end > self.dataset.shape[1]:
-            pad_needed = True
-            y_pad_after = y_end - self.dataset.shape[1]
-            y_end = self.dataset.shape[1]
+            y_pad_before = 0
+            y_pad_after = 0
+            x_pad_before = 0
+            x_pad_after = 0
+            pad_needed = False
+            if x_start < 0:
+                pad_needed = True
+                x_pad_before = -x_start
+                x_start = 0
+            if x_end > dataset.shape[0]:
+                pad_needed = True
+                x_pad_after = x_end - dataset.shape[0]
+                x_end = dataset.shape[0]
+            if y_start < 0:
+                pad_needed = True
+                y_pad_before = -y_start
+                y_start = 0
+            if y_end > dataset.shape[1]:
+                pad_needed = True
+                y_pad_after = y_end - dataset.shape[1]
+                y_end = dataset.shape[1]
 
-        x_range = slice(x_start, x_end)
-        y_range = slice(y_start, y_end)
+            x_range = slice(x_start, x_end)
+            y_range = slice(y_start, y_end)
 
-        window = windows.Window.from_slices(x_range, y_range)
-        img = get_window(self.dataset, window)
-        #img = self.image.shallow_copy_range(x_range, y_range)
-        if padding and pad_needed:
-            img = pad(img, x_pad_before, x_pad_after, y_pad_before, y_pad_after)
+            window = windows.Window.from_slices(x_range, y_range)
+            img = get_window(dataset, window)
+            if np.ma.isMaskedArray(img):
+                img = np.ma.filled(img, fill_value=0)
 
-        return DiskImageCell(img, self.x, self.y, x_range, y_range, orig=self.dataset)
+            if padding and pad_needed:
+                img = pad(img, x_pad_before, x_pad_after, y_pad_before, y_pad_after)
+
+            return DiskImageCell(dataset, img, self.x, self.y, x_range, y_range, orig=self.orig)
     
     @property
     def normalized(self):
@@ -256,3 +268,140 @@ def pad(image, x_pad_before: int, x_pad_after: int, y_pad_before: int, y_pad_aft
         pad_width += ((0, 0), )
 
     return np.pad(image, pad_width, 'constant', constant_values=0)
+
+class DiskCellGenerator:
+    def __init__(self,
+                 disk_image: DiskImage,
+                 size: tuple,
+                 offset=(None, None),
+                 length=(None, None)):
+
+        self.image = disk_image
+
+        self.x_size, self.y_size = size
+        with rasterio.open(self.image.path) as dataset:
+            self.x_length = int(np.ceil(dataset.shape[0] / self.x_size))
+            self.y_length = int(np.ceil(dataset.shape[1] / self.y_size))
+
+        offset = list(offset)
+        if offset[0] is None:
+            offset[0] = 0
+        if offset[0] < 0:
+            offset[0] = self.x_length - offset[0]
+        if offset[0] > self.x_length:
+            raise IndexError("x offset {} larger than image size {}".format(
+                offset[0], self.x_length))
+        self.x_offset = offset[0]
+
+        if offset[1] is None:
+            offset[1] = 0
+        if offset[1] < 0:
+            offset[1] = self.y_length - offset[1]
+        if offset[1] > self.y_length:
+            raise IndexError("y offset {} larger than image size {}".format(
+                offset[1], self.y_length))
+        self.y_offset = offset[1]
+
+        length = list(length)
+        if length[0] is None:
+            length[0] = self.x_length
+        if length[0] < 0:
+            length[0] = self.x_length - length[0]
+        if length[0] > self.x_length:
+            raise IndexError("x length {} larger than image size {}".format(
+                length[0], self.x_length))
+        self.x_length = length[0]
+
+        if length[1] is None:
+            length[1] = self.y_length
+        if length[1] < 0:
+            length[1] = self.y_length - length[1]
+        if length[1] > self.y_length:
+            raise IndexError("y length {} larger than image size {}".format(
+                length[1], self.y_length))
+        self.y_length = length[1]
+
+    def __len__(self):
+        return self.x_length * self.y_length
+
+    @property
+    def shape(self):
+        return (self.x_length, self.y_length)
+
+    def __iter__(self):
+        for x in range(self.x_length):
+            for y in range(self.y_length):
+                yield self[x, y]
+
+    def __getitem__(self, index):
+        x, y = index
+        x = self.x_length - x if x < 0 else x
+        y = self.y_length - y if y < 0 else y
+
+        if x >= self.x_length or y >= self.y_length:
+            raise IndexError('{} out of range for image of shape {}'.format(
+                index, self.shape))
+
+        x += self.x_offset
+        y += self.y_offset
+
+        x_start = x * self.x_size
+        x_range = slice(x_start, x_start + self.x_size)
+
+        y_start = y * self.y_size
+        y_range = slice(y_start, y_start + self.y_size)
+
+        window = windows.Window.from_slices(x_range, y_range)
+        with rasterio.open(self.image.path) as dataset:
+            im = get_window(dataset, window)
+
+            return DiskImageCell(dataset, im, x, y, x_range, y_range, orig=self.image)
+
+
+def extract_features_diskimage(features, generator):
+    """Compute features."""
+    shape = (generator.shape[0], generator.shape[1], features.index_size)
+    feature_vector = np.zeros(
+        (shape[0] * shape[1], shape[2]), dtype=np.float32)
+    logger.debug("Feature vector shape %s", shape)
+
+    size = len(generator)
+    for i, cell in enumerate(generator):
+        if i % (size // 10 or 1) == 0:
+            logger.debug("%s%% ready", 100 * i // size)
+        for feature in features.items.values():
+            feature_vector[i, feature.indices] = feature(cell)
+    feature_vector.shape = shape
+
+    return feature_vector
+
+def extract_single_diskimage(features, shape, size, cell):
+    """Compute features."""
+    i = cell.x * shape[0] + cell.y
+    if cell.y == 0:
+        logger.info("%s%% ready", 100 * i // size)
+    feature_vector = np.zeros((1, 1, features.index_size), dtype=np.float32)
+    for feature in features.items.values():
+        feature_vector[feature.indices] = feature(cell)
+    return cell, feature_vector
+
+def extract_features_parallel_diskimage(features, generator, n_jobs=cpu_count()):
+    """Extract features in parallel."""
+    logger.debug("Extracting features using at most %s processes", n_jobs)
+
+    shape = (generator.shape[0], generator.shape[1], features.index_size)
+    feature_vector = np.zeros(
+        (shape[0], shape[1], shape[2]), dtype=np.float32)
+
+    # Execute jobs
+    extracted_features = []
+    with ProcessPoolExecutor() as executor:
+        extract = partial(extract_single_diskimage, features, generator.shape, len(generator))
+        extracted_features = executor.map(extract, generator, chunksize=generator.shape[0])
+    
+    for cell, vector in extracted_features:
+        feature_vector[cell.x, cell.y, :] = vector
+
+    logger.debug("Done extracting features. Feature vector shape %s",
+                 feature_vector.shape)
+    return feature_vector
