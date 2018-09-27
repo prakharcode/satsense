@@ -69,77 +69,18 @@ class DiskImage(Image):
         if len(percentiles) != 2:
             raise ValueError("Only support normalization using 2 percentiles")
 
-        # total number of array elements per band
-        items = np.prod(dataset.shape)
-        # The nth item using the supplied percentiles
-        nth = items * np.array(percentiles) / 100.0
-        half = items / 2.0
-        # Zomgwtfbbq list comprehension
-        # This calculates the number of items to remember during the calculation
-        buffer_sizes = [int(np.ceil(x)) if x <= half else int(np.ceil(items-x)) for x in nth]
-
-        # TODO: if the sum of the buffers is larger than
-        # the total size of the image, it makes more sense to
-        # use the old method
-        # whole_image = False
-        # if np.sum(buffer_sizes) > items:
-        #    whole_image = True
-
-        # Create 2 buffers of the right size for each band
-        buffers = {}
-        for key, band in bands.items():
-            buffers[key] = {i:{'array': np.array([]), 'len': 0} for i,x in enumerate(buffer_sizes)}
-
-        # Arbitrary small window size
-        window_size = (400, 400)
-        x_tiles = int(np.ceil(dataset.shape[0] / window_size[0]))
-        y_tiles = int(np.ceil(dataset.shape[1] / window_size[1]))
-        for x_tile in range(x_tiles):
-            for y_tile in range(y_tiles):
-                logger.debug("x, y: ({}, {})".format(x_tile, y_tile))
-                image = get_tile(dataset, x_tile, y_tile, *window_size)
-
-                for key, band in bands.items():
-                    if np.ma.isMaskedArray(image):
-                        # select only non-masked values for computing scale
-                        selection = image[:, :, band].compressed()
-                    else:
-                        selection = image[:, :, band].flatten()
-                        selection = selection[~np.isnan(selection)]
-
-                    # Use selection to only take those values that are smaller than the largest value in the buffer
-                    # Insert all the new values
-                    buffers[key][0]['array'] = np.concatenate((buffers[key][0]['array'], selection))
-                    buffers[key][1]['array'] = np.concatenate((buffers[key][1]['array'], selection))
-
-                    # Store the actual lenghts of the arrays
-                    buffers[key][0]['len'] += len(selection)
-                    buffers[key][1]['len'] += len(selection)
-
-                    # Sort the arrays
-                    buffers[key][0]['array'].sort()
-                    # Sort in reverse order
-                    buffers[key][1]['array'][::-1].sort()
-
-                    # Only keep those values that we're interested in
-                    buffers[key][0]['array'] = buffers[key][0]['array'][0:buffer_sizes[0]]
-                    buffers[key][1]['array'] = buffers[key][1]['array'][0:buffer_sizes[1]]
-
-
-        # After calculation the last value
-        # holds the low and high percentile
         min_max = {}
         for key, band in bands.items():
-            min_max[key] = {}
+            # select only non-masked values for computing scale
+            selection = dataset.read(band, masked=True).compressed()
 
-            # Recalculate the nth percentile using the actual number of items
-            items = buffers[key][0]['len']
-            nth = items * np.array(percentiles) / 100.0
-            half = items / 2.0
-            locs  = [int(np.ceil(x)) if x <= half else int(np.ceil(items-x)) for x in nth]
+            # there should be no nans in a masked dataset
+            percents = np.percentile(selection, percentiles)
 
-            min_max[key][0] = buffers[key][0]['array'][locs[0]-1]
-            min_max[key][1] = buffers[key][1]['array'][locs[0]-1]
+            min_max[key] = {
+                'min': percents[0],
+                'max': percents[1]
+            }
         
         return min_max
 
@@ -249,8 +190,8 @@ class DiskImageCell(DiskImage):
         if 'normalized' not in self._images:
             result = self.image.copy()
             for key, band in self.bands.items():
-                new_min = self.orig.min_max[key][0]
-                new_max = self.orig.min_max[key][1]
+                new_min = self.orig.min_max[key]['min']
+                new_max = self.orig.min_max[key]['max']
 
                 result[:, :, band] = remap(result[:, :, band], new_min, new_max, 0, 1)
 
