@@ -71,8 +71,10 @@ class DiskImage(Image):
 
         min_max = {}
         for key, band in bands.items():
+            logging.info("Normalizing band %s (%i)", key, band)
             # select only non-masked values for computing scale
-            selection = dataset.read(band, masked=True).compressed()
+            # rasterio bands in read is indexed from 1
+            selection = dataset.read(band+1, masked=True).compressed()
 
             # there should be no nans in a masked dataset
             percents = np.percentile(selection, percentiles)
@@ -81,7 +83,8 @@ class DiskImage(Image):
                 'min': percents[0],
                 'max': percents[1]
             }
-        
+
+        logging.info("normalization values: %s", min_max)       
         return min_max
 
     # self.new_min = {}
