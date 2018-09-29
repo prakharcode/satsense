@@ -1,10 +1,13 @@
-import rasterio
 import logging
-import numpy as np
-from rasterio import windows
-from concurrent.futures import ProcessPoolExecutor
-from functools import partial
 from os import cpu_count
+from functools import partial
+from concurrent.futures import ProcessPoolExecutor
+
+import rasterio
+from rasterio import windows
+
+import numpy as np
+
 from .image import Image, remap
 
 logger = logging.getLogger('disk_image')
@@ -48,8 +51,8 @@ class DiskImage(Image):
                 image = image[:, :, np.newaxis]
 
             return cls(dataset, path, image, satellite, name=path, compute=True)
-    
-    
+
+
     def calculate_normalization_factors(self, bands, technique='cumulative', percentiles=(2.0, 98.0), numstds=2):
         """Calculate the normalization factors on the image based on the band maximum.
 
@@ -84,7 +87,7 @@ class DiskImage(Image):
                 'max': percents[1]
             }
 
-        logging.info("normalization values: %s", min_max)       
+        logging.info("normalization values: %s", min_max)
         return min_max
 
     # self.new_min = {}
@@ -122,8 +125,12 @@ def get_window(dataset, window):
         # This image seems to have one band, so we add an axis for ease
         # of use in the rest of the library
         image = image[:, :, np.newaxis]
-    
-    return image
+  
+    if np.issubdtype(image.dtype, np.floating):
+        return image
+    else:
+        # TODO: just blatently use float32 is maybe not the best here
+        return image.astype(np.float32)
 
 
 class DiskImageCell(DiskImage):
@@ -297,9 +304,9 @@ class DiskCellGenerator:
 
         window = windows.Window.from_slices(x_range, y_range)
         with rasterio.open(self.image.path) as dataset:
-            im = get_window(dataset, window)
+            img = get_window(dataset, window)
 
-            return DiskImageCell(dataset, im, x, y, x_range, y_range, orig=self.image)
+            return DiskImageCell(dataset, img, x, y, x_range, y_range, orig=self.image)
 
 
 def extract_features_diskimage(features, generator):
@@ -342,7 +349,7 @@ def extract_features_parallel_diskimage(features, generator, n_jobs=cpu_count())
     with ProcessPoolExecutor() as executor:
         extract = partial(extract_single_diskimage, features, generator.shape, len(generator))
         extracted_features = executor.map(extract, generator, chunksize=generator.shape[0])
-    
+
     for cell, vector in extracted_features:
         feature_vector[cell.x, cell.y, :] = vector
 
